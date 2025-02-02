@@ -245,6 +245,8 @@ def traductor_geringoso(lista):
     
     return res
 
+print(traductor_geringoso(['banana', 'manzana', 'mandarina']))
+
 #%%
     
         
