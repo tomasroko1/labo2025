@@ -21,6 +21,7 @@ billete_alto = 0.11
 obelisco_alto = 67500
 
 suma = 0.11
+dias = 1
 while suma <= obelisco_alto:
     dias += 1
     suma += suma
