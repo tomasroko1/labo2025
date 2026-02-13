@@ -1,6 +1,21 @@
 const { chromium } = require('playwright');
 const { Client } = require('@notionhq/client');
-require('dotenv').config();
+
+// Log environment variables for debugging (remove sensitive data in production)
+console.log('Environment check:');
+console.log('NOTION_TOKEN exists:', !!process.env.NOTION_TOKEN);
+console.log('NOTION_TOKEN length:', process.env.NOTION_TOKEN ? process.env.NOTION_TOKEN.length : 0);
+console.log('NOTION_DATABASE_ID exists:', !!process.env.NOTION_DATABASE_ID);
+
+if (!process.env.NOTION_TOKEN) {
+    console.error('ERROR: NOTION_TOKEN is not set!');
+    process.exit(1);
+}
+
+if (!process.env.NOTION_DATABASE_ID) {
+    console.error('ERROR: NOTION_DATABASE_ID is not set!');
+    process.exit(1);
+}
 
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const databaseId = process.env.NOTION_DATABASE_ID;
@@ -11,30 +26,37 @@ async function getExistingJobLinksFromNotion() {
     const links = new Set();
     let cursor = undefined;
 
-    while (true) {
-        const response = await notion.databases.query({
-            database_id: databaseId,
-            filter: {
-                property: 'Link',
-                url: {
-                    is_not_empty: true,
+    try {
+        while (true) {
+            const response = await notion.databases.query({
+                database_id: databaseId,
+                filter: {
+                    property: 'Link',
+                    url: {
+                        is_not_empty: true,
+                    },
                 },
-            },
-            page_size: 100,
-            start_cursor: cursor,
-        });
+                page_size: 100,
+                start_cursor: cursor,
+            });
 
-        for (const page of response.results) {
-            if (page.properties.Link && page.properties.Link.url) {
-                links.add(page.properties.Link.url.split('?')[0]); // Clean URL
+            for (const page of response.results) {
+                if (page.properties.Link && page.properties.Link.url) {
+                    links.add(page.properties.Link.url.split('?')[0]);
+                }
             }
-        }
 
-        if (!response.has_more) {
-            break;
+            if (!response.has_more) {
+                break;
+            }
+            cursor = response.next_cursor;
         }
-        cursor = response.next_cursor;
+    } catch (error) {
+        console.error('Error querying Notion database:', error.message);
+        console.error('Database ID:', databaseId);
+        throw error;
     }
+    
     return links;
 }
 
@@ -48,7 +70,7 @@ async function syncJobToNotion(job) {
                 'Company': { rich_text: [{ text: { content: job.company } }] },
                 'Location': { rich_text: [{ text: { content: job.location } }] },
                 'Link': { url: job.link },
-                'DateScanned': { date: { start: job.date } }, // YYYY-MM-DD
+                'DateScanned': { date: { start: job.date } },
                 'Type': { select: { name: job.type.substring(0, 100) || 'Unknown' } },
                 'TechStack': {
                     multi_select: job.stack.split(',')
@@ -67,8 +89,6 @@ async function syncJobToNotion(job) {
 
 (async () => {
     console.log('Launching browser...');
-    // Launch browser (headless: false to bypass some bot checks if possible, or true for speed)
-    // We strive for robustness, so let's try headless first. If it fails, we might need user monitoring.
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -94,8 +114,7 @@ async function syncJobToNotion(job) {
             cards.forEach(card => {
                 const titleLink = card.querySelector('a.job-card-list__title--link');
                 if (titleLink) {
-                    const href = titleLink.href.split('?')[0]; // Clean URL
-                    // Ensure full URL
+                    const href = titleLink.href.split('?')[0];
                     links.push(href.startsWith('http') ? href : 'https://www.linkedin.com' + href);
                 }
             });
@@ -103,6 +122,13 @@ async function syncJobToNotion(job) {
         });
 
         console.log(`Found ${jobLinks.length} potential jobs.`);
+        
+        if (jobLinks.length === 0) {
+            console.log('No jobs found. This might be due to LinkedIn blocking automated access.');
+            await browser.close();
+            return;
+        }
+        
         const existingLinks = await getExistingJobLinksFromNotion();
 
         // Filter out existing
@@ -154,7 +180,6 @@ async function syncJobToNotion(job) {
 
             } catch (err) {
                 console.error(`Error filtering/processing job ${link}: ${err.message}`);
-                // Continue to next job even if this one fails!
             }
         }
 
