@@ -109,8 +109,8 @@ async function syncJobToNotion(job) {
         const newLinks = jobLinks.filter(link => !existingLinks.has(link));
         console.log(`${newLinks.length} are new.`);
 
-        // Process only first 5 *new* jobs to start
-        const jobsToProcess = newLinks.slice(0, 5);
+        // Process first 15 *new* jobs
+        const jobsToProcess = newLinks.slice(0, 15);
 
         for (const link of jobsToProcess) {
             console.log(`Processing: ${link}`);
