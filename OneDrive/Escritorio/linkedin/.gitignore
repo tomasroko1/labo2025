@@ -1,0 +1,13 @@
+node_modules/
+.env
+*.log
+.DS_Store
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
