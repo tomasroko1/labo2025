@@ -1,11 +1,11 @@
-const { chromium } = require('playwright');
+const axios = require('axios');
 const { Client } = require('@notionhq/client');
 
-// Log environment variables for debugging (remove sensitive data in production)
+// Log environment variables for debugging
 console.log('Environment check:');
 console.log('NOTION_TOKEN exists:', !!process.env.NOTION_TOKEN);
-console.log('NOTION_TOKEN length:', process.env.NOTION_TOKEN ? process.env.NOTION_TOKEN.length : 0);
 console.log('NOTION_DATABASE_ID exists:', !!process.env.NOTION_DATABASE_ID);
+console.log('RAPIDAPI_KEY exists:', !!process.env.RAPIDAPI_KEY);
 
 if (!process.env.NOTION_TOKEN) {
     console.error('ERROR: NOTION_TOKEN is not set!');
@@ -17,9 +17,17 @@ if (!process.env.NOTION_DATABASE_ID) {
     process.exit(1);
 }
 
+if (!process.env.RAPIDAPI_KEY) {
+    console.error('ERROR: RAPIDAPI_KEY is not set!');
+    process.exit(1);
+}
+
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const databaseId = process.env.NOTION_DATABASE_ID;
-const SEARCH_URL = 'https://www.linkedin.com/jobs/search/?currentJobId=4361188587&f_JT=P%2CI&f_PP=103813819&geoId=92000000&origin=JOB_SEARCH_PAGE_JOB_FILTER&refresh=true&sortBy=R&start=25';
+
+// JSearch API Configuration
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+const RAPIDAPI_HOST = 'jsearch.p.rapidapi.com';
 
 // Helper to get existing job links from Notion
 async function getExistingJobLinksFromNotion() {
@@ -42,7 +50,7 @@ async function getExistingJobLinksFromNotion() {
 
             for (const page of response.results) {
                 if (page.properties.Link && page.properties.Link.url) {
-                    links.add(page.properties.Link.url.split('?')[0]);
+                    links.add(page.properties.Link.url);
                 }
             }
 
@@ -53,170 +61,206 @@ async function getExistingJobLinksFromNotion() {
         }
     } catch (error) {
         console.error('Error querying Notion database:', error.message);
-        console.error('Database ID:', databaseId);
         throw error;
     }
     
+    console.log(`Found ${links.size} existing jobs in Notion`);
     return links;
+}
+
+// Search jobs using JSearch API
+async function searchJobs() {
+    const options = {
+        method: 'GET',
+        url: 'https://jsearch.p.rapidapi.com/search',
+        headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST
+        },
+        params: {
+            query: 'Data Engineer OR Data Scientist OR Python Developer part-time internship Buenos Aires Argentina OR remote',
+            page: '1',
+            num_pages: '1',
+            date_posted: '3days',
+            employment_types: 'PARTTIME,INTERN,CONTRACTOR',
+            country: 'ar',
+            language: 'es'
+        }
+    };
+
+    try {
+        console.log('Searching jobs via JSearch API...');
+        const response = await axios.request(options);
+        
+        if (response.data && response.data.data) {
+            console.log(`Found ${response.data.data.length} total jobs from API`);
+            return response.data.data;
+        }
+        return [];
+    } catch (error) {
+        console.error('Error searching jobs:', error.response?.data || error.message);
+        return [];
+    }
+}
+
+// Filter jobs based on criteria
+function filterJobs(jobs) {
+    const excludeKeywords = ['senior', 'lead', 'manager', 'architect', 'director', 'principal', 'head of'];
+    const includeKeywords = ['data', 'engineer', 'scientist', 'python', 'sql', 'analyst', 'junior', 'intern', 'trainee', 'student', 'becario', 'pasantía', 'part-time', 'part time'];
+    
+    const filtered = jobs.filter(job => {
+        const title = (job.job_title || '').toLowerCase();
+        const description = (job.job_description || '').toLowerCase();
+        const text = title + ' ' + description;
+        
+        // Exclude senior roles
+        const hasExcludeKeyword = excludeKeywords.some(kw => text.includes(kw));
+        if (hasExcludeKeyword) return false;
+        
+        // Must include at least one relevant keyword
+        const hasIncludeKeyword = includeKeywords.some(kw => text.includes(kw));
+        if (!hasIncludeKeyword) return false;
+        
+        // Check if it's part-time or internship
+        const isPartTime = 
+            text.includes('part-time') || 
+            text.includes('part time') || 
+            text.includes('media jornada') ||
+            text.includes('pasantía') ||
+            text.includes('pasante') ||
+            text.includes('becario') ||
+            text.includes('beca') ||
+            text.includes('intern') ||
+            text.includes('internship') ||
+            text.includes('trainee') ||
+            text.includes('estudiante') ||
+            text.includes('20 horas') ||
+            text.includes('20hrs') ||
+            text.includes('flexible') ||
+            job.job_employment_type === 'PARTTIME' ||
+            job.job_employment_type === 'INTERN';
+        
+        return isPartTime;
+    });
+    
+    console.log(`${filtered.length} jobs match part-time/internship criteria`);
+    return filtered;
 }
 
 // Helper: Sync to Notion
 async function syncJobToNotion(job) {
     try {
+        // Extract tech stack keywords from description
+        const techKeywords = ['python', 'sql', 'aws', 'azure', 'gcp', 'spark', 'hadoop', 'pandas', 'numpy', 'scikit-learn', 'tensorflow', 'pytorch', 'docker', 'kubernetes', 'airflow', 'dbt', 'tableau', 'power bi', 'excel', 'javascript', 'typescript', 'react', 'node.js', 'git', 'github', 'ci/cd', 'terraform', 'etl', 'ml', 'machine learning', 'ai', 'statistics', 'r', 'jupyter'];
+        
+        const description = (job.job_description || '').toLowerCase();
+        const stack = techKeywords
+            .filter(kw => description.includes(kw))
+            .map(kw => kw.charAt(0).toUpperCase() + kw.slice(1));
+        
+        // Determine job type
+        let jobType = job.job_employment_type || 'Unknown';
+        if (jobType === 'PARTTIME') jobType = 'Part-time';
+        else if (jobType === 'INTERN') jobType = 'Internship';
+        else if (jobType === 'CONTRACTOR') jobType = 'Contract';
+        else if (jobType === 'FULLTIME') jobType = 'Full-time';
+        
+        // Truncate summary to 2000 chars (Notion limit)
+        const summary = (job.job_description || 'No description available').substring(0, 2000);
+        
         await notion.pages.create({
             parent: { database_id: databaseId },
             properties: {
-                'Title': { title: [{ text: { content: job.title } }] },
-                'Company': { rich_text: [{ text: { content: job.company } }] },
-                'Location': { rich_text: [{ text: { content: job.location } }] },
-                'Link': { url: job.link },
-                'DateScanned': { date: { start: job.date } },
-                'Type': { select: { name: job.type.substring(0, 100) || 'Unknown' } },
-                'TechStack': {
-                    multi_select: job.stack.split(',')
-                        .map(s => s.trim())
-                        .filter(s => s.length > 0)
-                        .map(s => ({ name: s.replace(/,/g, '').substring(0, 100) }))
+                'Title': { 
+                    title: [{ text: { content: job.job_title || 'Unknown Title' } }] 
                 },
-                'Summary': { rich_text: [{ text: { content: job.summary.substring(0, 2000) } }] }
+                'Company': { 
+                    rich_text: [{ text: { content: job.employer_name || 'Unknown Company' } }] 
+                },
+                'Location': { 
+                    rich_text: [{ 
+                        text: { content: `${job.job_city || ''}, ${job.job_country || ''}`.trim() || 'Remote/Unknown' } 
+                    }] 
+                },
+                'Link': { 
+                    url: job.job_apply_link || job.job_google_link || job.job_highlights?.Apply || 'https://www.google.com' 
+                },
+                'DateScanned': { 
+                    date: { start: new Date().toISOString().split('T')[0] } 
+                },
+                'Type': { 
+                    select: { name: jobType.substring(0, 100) } 
+                },
+                'TechStack': {
+                    multi_select: stack.slice(0, 20).map(s => ({ name: s.substring(0, 100) }))
+                },
+                'Summary': { 
+                    rich_text: [{ text: { content: summary } }] 
+                }
             }
         });
-        console.log(`Synced to Notion: ${job.title}`);
+        console.log(`✅ Synced to Notion: ${job.job_title} at ${job.employer_name}`);
     } catch (error) {
-        console.error(`Failed to sync to Notion: ${error.message}`);
+        console.error(`❌ Failed to sync to Notion: ${error.message}`);
     }
 }
 
+// Main function
 (async () => {
-    console.log('Launching browser...');
-    const browser = await chromium.launch({ 
-        headless: true,
-        args: [
-            '--disable-blink-features=AutomationControlled',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process'
-        ]
-    });
-    const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 },
-        locale: 'en-US',
-        timezoneId: 'America/New_York',
-        extraHTTPHeaders: {
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        }
-    });
-    
-    // Evitar detección de webdriver
-    await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        });
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
-        });
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en']
-        });
-    });
-    const page = await context.newPage();
-
     try {
-        console.log('Navigating to job list...');
-        await page.goto(SEARCH_URL, { timeout: 60000 });
-        await page.waitForTimeout(5000);
-
-        // Scroll to load job list
-        console.log('Scrolling to load jobs...');
-        for (let i = 0; i < 5; i++) {
-            await page.evaluate(() => window.scrollBy(0, 500));
-            await page.waitForTimeout(1000);
-        }
-
-        // Extract job links from the list
-        const jobLinks = await page.evaluate(() => {
-            const cards = document.querySelectorAll('.job-card-container, .jobs-search-results__list-item');
-            const links = [];
-            cards.forEach(card => {
-                const titleLink = card.querySelector('a.job-card-list__title--link');
-                if (titleLink) {
-                    const href = titleLink.href.split('?')[0];
-                    links.push(href.startsWith('http') ? href : 'https://www.linkedin.com' + href);
-                }
-            });
-            return links;
-        });
-
-        console.log(`Found ${jobLinks.length} potential jobs.`);
+        console.log('=== LinkedIn Job Scraper via JSearch API ===');
+        console.log('');
         
-        if (jobLinks.length === 0) {
-            console.log('No jobs found. This might be due to LinkedIn blocking automated access.');
-            await browser.close();
+        // Get existing jobs
+        const existingLinks = await getExistingJobLinksFromNotion();
+        
+        // Search for new jobs
+        const allJobs = await searchJobs();
+        
+        if (allJobs.length === 0) {
+            console.log('No jobs found from API');
             return;
         }
         
-        const existingLinks = await getExistingJobLinksFromNotion();
-
-        // Filter out existing
-        const newLinks = jobLinks.filter(link => !existingLinks.has(link));
-        console.log(`${newLinks.length} are new.`);
-
-        // Process first 15 *new* jobs
-        const jobsToProcess = newLinks.slice(0, 15);
-
-        for (const link of jobsToProcess) {
-            console.log(`Processing: ${link}`);
-            try {
-                await page.goto(link, { timeout: 60000 });
-                await page.waitForTimeout(3000);
-
-                // Click 'See more' if needed
-                const seeMoreButton = await page.$('button[aria-label="See more"], button.jobs-description__footer-button');
-                if (seeMoreButton) await seeMoreButton.click().catch(() => { });
-
-                // Extract Details
-                const details = await page.evaluate(() => {
-                    const title = document.querySelector('h1')?.innerText.trim() || 'Unknown Title';
-                    const company = document.querySelector('.job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name')?.innerText.trim() || 'Unknown Company';
-                    const location = document.querySelector('.job-details-jobs-unified-top-card__bullet, .jobs-unified-top-card__bullet')?.innerText.trim() || 'Unknown Location';
-                    const description = document.querySelector('#job-details, .jobs-description')?.innerText || '';
-
-                    // Simple keyword extraction
-                    const type = description.toLowerCase().includes('intern') || description.toLowerCase().includes('pasant') ? 'Internship' : 'Full-time';
-                    const stackKeywords = ['python', 'sql', 'excel', 'aws', 'java', 'react', 'node', 'power bi', 'tableau'];
-                    const stack = stackKeywords.filter(k => description.toLowerCase().includes(k)).map(k => k.charAt(0).toUpperCase() + k.slice(1)).join(', ');
-
-                    const summary = description.substring(0, 150).replace(/\n/g, ' ') + '...';
-
-                    return { title, company, location, type, stack, summary };
-                });
-
-                const jobData = {
-                    date: new Date().toISOString().split('T')[0],
-                    ...details,
-                    link: link
-                };
-
-                // Save Immediately
-                await syncJobToNotion(jobData);
-
-                // Random delay to be polite
-                const delay = Math.floor(Math.random() * 3000) + 2000;
-                await page.waitForTimeout(delay);
-
-            } catch (err) {
-                console.error(`Error filtering/processing job ${link}: ${err.message}`);
-            }
+        // Filter for part-time/internship
+        const filteredJobs = filterJobs(allJobs);
+        
+        if (filteredJobs.length === 0) {
+            console.log('No part-time/internship jobs found matching criteria');
+            return;
         }
-
+        
+        // Filter out existing jobs
+        const newJobs = filteredJobs.filter(job => {
+            const link = job.job_apply_link || job.job_google_link || job.job_highlights?.Apply;
+            return link && !existingLinks.has(link);
+        });
+        
+        console.log(`${newJobs.length} new jobs to process`);
+        
+        if (newJobs.length === 0) {
+            console.log('No new jobs to sync');
+            return;
+        }
+        
+        // Process only first 7 jobs
+        const jobsToProcess = newJobs.slice(0, 7);
+        console.log(`Processing ${jobsToProcess.length} jobs...`);
+        console.log('');
+        
+        for (const job of jobsToProcess) {
+            console.log(`Processing: ${job.job_title} at ${job.employer_name}`);
+            await syncJobToNotion(job);
+            
+            // Small delay to be polite
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        console.log('');
+        console.log('=== Job sync complete ===');
+        
     } catch (error) {
-        console.error('Fatal error during scan:', error);
-    } finally {
-        await browser.close();
+        console.error('Fatal error:', error);
+        process.exit(1);
     }
 })();
