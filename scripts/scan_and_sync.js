@@ -72,7 +72,7 @@ async function getExistingJobLinksFromNotion() {
 async function searchJobs() {
     const options = {
         method: 'GET',
-        url: 'https://linkedin-job-search-api.p.rapidapi.com/jobs-7d',
+        url: 'https://linkedin-job-search-api.p.rapidapi.com/jobs',
         headers: {
             'X-RapidAPI-Key': RAPIDAPI_KEY,
             'X-RapidAPI-Host': RAPIDAPI_HOST
