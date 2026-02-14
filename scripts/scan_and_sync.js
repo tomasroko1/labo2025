@@ -25,9 +25,9 @@ if (!process.env.RAPIDAPI_KEY) {
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const databaseId = process.env.NOTION_DATABASE_ID;
 
-// JSearch API Configuration
+// LinkedIn Job Search API Configuration
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
-const RAPIDAPI_HOST = 'jsearch.p.rapidapi.com';
+const RAPIDAPI_HOST = 'linkedin-job-search-api.p.rapidapi.com';
 
 // Helper to get existing job links from Notion
 async function getExistingJobLinksFromNotion() {
@@ -68,33 +68,37 @@ async function getExistingJobLinksFromNotion() {
     return links;
 }
 
-// Search jobs using JSearch API
+// Search jobs using LinkedIn Job Search API
 async function searchJobs() {
     const options = {
         method: 'GET',
-        url: 'https://jsearch.p.rapidapi.com/search',
+        url: 'https://linkedin-job-search-api.p.rapidapi.com/jobs-7d',
         headers: {
             'X-RapidAPI-Key': RAPIDAPI_KEY,
             'X-RapidAPI-Host': RAPIDAPI_HOST
         },
         params: {
-            query: 'Data Engineer OR Data Scientist OR Python Developer',
-            page: '1',
-            num_pages: '1',
-            date_posted: 'week'
+            title_filter: '("Data Engineer" OR "Data Scientist" OR "Python Developer")',
+            location_filter: 'Argentina',
+            type_filter: 'PART_TIME,INTERN',
+            limit: '20',
+            description_type: 'text'
         }
     };
 
     try {
-        console.log('Searching jobs via JSearch API...');
-        console.log('Query params:', options.params);
+        console.log('Searching jobs via LinkedIn Job Search API...');
+        console.log('Query:', options.params.title_filter);
+        console.log('Location:', options.params.location_filter);
+        console.log('Type:', options.params.type_filter);
+        
         const response = await axios.request(options);
         
         console.log('API Response status:', response.status);
         
-        if (response.data && response.data.data) {
-            console.log(`Found ${response.data.data.length} total jobs from API`);
-            return response.data.data;
+        if (response.data && Array.isArray(response.data)) {
+            console.log(`Found ${response.data.length} total jobs from LinkedIn API`);
+            return response.data;
         }
         return [];
     } catch (error) {
@@ -109,8 +113,8 @@ function filterJobs(jobs) {
     const includeKeywords = ['data', 'engineer', 'scientist', 'python', 'sql', 'analyst', 'junior', 'intern', 'trainee', 'student', 'becario', 'pasantía', 'part-time', 'part time'];
     
     const filtered = jobs.filter(job => {
-        const title = (job.job_title || '').toLowerCase();
-        const description = (job.job_description || '').toLowerCase();
+        const title = (job.title || '').toLowerCase();
+        const description = (job.description_text || '').toLowerCase();
         const text = title + ' ' + description;
         
         // Exclude senior roles
@@ -121,29 +125,10 @@ function filterJobs(jobs) {
         const hasIncludeKeyword = includeKeywords.some(kw => text.includes(kw));
         if (!hasIncludeKeyword) return false;
         
-        // Check if it's part-time or internship
-        const isPartTime = 
-            text.includes('part-time') || 
-            text.includes('part time') || 
-            text.includes('media jornada') ||
-            text.includes('pasantía') ||
-            text.includes('pasante') ||
-            text.includes('becario') ||
-            text.includes('beca') ||
-            text.includes('intern') ||
-            text.includes('internship') ||
-            text.includes('trainee') ||
-            text.includes('estudiante') ||
-            text.includes('20 horas') ||
-            text.includes('20hrs') ||
-            text.includes('flexible') ||
-            job.job_employment_type === 'PARTTIME' ||
-            job.job_employment_type === 'INTERN';
-        
-        return isPartTime;
+        return true;
     });
     
-    console.log(`${filtered.length} jobs match part-time/internship criteria`);
+    console.log(`${filtered.length} jobs match criteria after filtering`);
     return filtered;
 }
 
@@ -153,37 +138,46 @@ async function syncJobToNotion(job) {
         // Extract tech stack keywords from description
         const techKeywords = ['python', 'sql', 'aws', 'azure', 'gcp', 'spark', 'hadoop', 'pandas', 'numpy', 'scikit-learn', 'tensorflow', 'pytorch', 'docker', 'kubernetes', 'airflow', 'dbt', 'tableau', 'power bi', 'excel', 'javascript', 'typescript', 'react', 'node.js', 'git', 'github', 'ci/cd', 'terraform', 'etl', 'ml', 'machine learning', 'ai', 'statistics', 'r', 'jupyter'];
         
-        const description = (job.job_description || '').toLowerCase();
+        const description = (job.description_text || '').toLowerCase();
         const stack = techKeywords
             .filter(kw => description.includes(kw))
             .map(kw => kw.charAt(0).toUpperCase() + kw.slice(1));
         
-        // Determine job type
-        let jobType = job.job_employment_type || 'Unknown';
-        if (jobType === 'PARTTIME') jobType = 'Part-time';
-        else if (jobType === 'INTERN') jobType = 'Internship';
-        else if (jobType === 'CONTRACTOR') jobType = 'Contract';
-        else if (jobType === 'FULLTIME') jobType = 'Full-time';
+        // Determine job type from employment_type array
+        let jobType = 'Unknown';
+        if (job.employment_type && job.employment_type.length > 0) {
+            const type = job.employment_type[0];
+            if (type === 'PART_TIME') jobType = 'Part-time';
+            else if (type === 'INTERN') jobType = 'Internship';
+            else if (type === 'FULL_TIME') jobType = 'Full-time';
+            else if (type === 'CONTRACTOR') jobType = 'Contract';
+            else jobType = type;
+        }
+        
+        // Get location from locations_derived array
+        let location = 'Remote/Unknown';
+        if (job.locations_derived && job.locations_derived.length > 0) {
+            const loc = job.locations_derived[0];
+            location = `${loc.city || ''}, ${loc.country || ''}`.trim() || 'Remote/Unknown';
+        }
         
         // Truncate summary to 2000 chars (Notion limit)
-        const summary = (job.job_description || 'No description available').substring(0, 2000);
+        const summary = (job.description_text || 'No description available').substring(0, 2000);
         
         await notion.pages.create({
             parent: { database_id: databaseId },
             properties: {
                 'Title': { 
-                    title: [{ text: { content: job.job_title || 'Unknown Title' } }] 
+                    title: [{ text: { content: job.title || 'Unknown Title' } }] 
                 },
                 'Company': { 
-                    rich_text: [{ text: { content: job.employer_name || 'Unknown Company' } }] 
+                    rich_text: [{ text: { content: job.organization || 'Unknown Company' } }] 
                 },
                 'Location': { 
-                    rich_text: [{ 
-                        text: { content: `${job.job_city || ''}, ${job.job_country || ''}`.trim() || 'Remote/Unknown' } 
-                    }] 
+                    rich_text: [{ text: { content: location } }] 
                 },
                 'Link': { 
-                    url: job.job_apply_link || job.job_google_link || job.job_highlights?.Apply || 'https://www.google.com' 
+                    url: job.url || 'https://www.linkedin.com' 
                 },
                 'DateScanned': { 
                     date: { start: new Date().toISOString().split('T')[0] } 
@@ -199,7 +193,7 @@ async function syncJobToNotion(job) {
                 }
             }
         });
-        console.log(`✅ Synced to Notion: ${job.job_title} at ${job.employer_name}`);
+        console.log(`✅ Synced to Notion: ${job.title} at ${job.organization}`);
     } catch (error) {
         console.error(`❌ Failed to sync to Notion: ${error.message}`);
     }
@@ -208,7 +202,7 @@ async function syncJobToNotion(job) {
 // Main function
 (async () => {
     try {
-        console.log('=== LinkedIn Job Scraper via JSearch API ===');
+        console.log('=== LinkedIn Job Scraper (Real LinkedIn API) ===');
         console.log('');
         
         // Get existing jobs
@@ -218,22 +212,21 @@ async function syncJobToNotion(job) {
         const allJobs = await searchJobs();
         
         if (allJobs.length === 0) {
-            console.log('No jobs found from API');
+            console.log('No jobs found from LinkedIn API');
             return;
         }
         
-        // Filter for part-time/internship
+        // Filter jobs
         const filteredJobs = filterJobs(allJobs);
         
         if (filteredJobs.length === 0) {
-            console.log('No part-time/internship jobs found matching criteria');
+            console.log('No jobs found matching criteria');
             return;
         }
         
         // Filter out existing jobs
         const newJobs = filteredJobs.filter(job => {
-            const link = job.job_apply_link || job.job_google_link || job.job_highlights?.Apply;
-            return link && !existingLinks.has(link);
+            return job.url && !existingLinks.has(job.url);
         });
         
         console.log(`${newJobs.length} new jobs to process`);
@@ -249,7 +242,7 @@ async function syncJobToNotion(job) {
         console.log('');
         
         for (const job of jobsToProcess) {
-            console.log(`Processing: ${job.job_title} at ${job.employer_name}`);
+            console.log(`Processing: ${job.title} at ${job.organization}`);
             await syncJobToNotion(job);
             
             // Small delay to be polite
