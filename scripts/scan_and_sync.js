@@ -78,19 +78,19 @@ async function searchJobs() {
             'X-RapidAPI-Host': RAPIDAPI_HOST
         },
         params: {
-            query: 'Data Engineer OR Data Scientist OR Python Developer part-time internship Buenos Aires Argentina OR remote',
+            query: 'Data Engineer OR Data Scientist OR Python Developer',
             page: '1',
             num_pages: '1',
-            date_posted: '3days',
-            employment_types: 'PARTTIME,INTERN,CONTRACTOR',
-            country: 'ar',
-            language: 'es'
+            date_posted: 'week'
         }
     };
 
     try {
         console.log('Searching jobs via JSearch API...');
+        console.log('Query params:', options.params);
         const response = await axios.request(options);
+        
+        console.log('API Response status:', response.status);
         
         if (response.data && response.data.data) {
             console.log(`Found ${response.data.data.length} total jobs from API`);
